@@ -23,7 +23,7 @@ seem to train the GTN on one fixed architecture only. The rate of
 success of transferring a trained GTN to another architecture is
 limited.
 
-Introduction
+Generative Teaching Networks
 ============
 
 *Meta-learning* is concerned about “learning to learn”. In machine
