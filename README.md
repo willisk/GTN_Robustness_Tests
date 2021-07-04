@@ -51,8 +51,8 @@ steps).
 Robustness Performance Tests
 ============================
 
-The following performance tests only focus on the MNIST dataset, as the
-CIFAR10 dataset results were deemed too unreliable to make any
+The following performance tests only focus on the `MNIST` dataset, as the
+`CIFAR10` dataset results were deemed too unreliable to make any
 significant claims. For all experiments, two different GTN models have
 been trained that were optimized for the `’base_larger’` and
 `’base_larger3’` models respectively. These two GTN choices each trained
@@ -78,7 +78,7 @@ Noise Corruption
 ----------------
 
 In this setting, Gaussian noise that is sampled from a normal
-distribution with standard deviation of $\beta$ is added to the input.
+distribution with standard deviation of beta is added to the input.
 
 
 ![Noise corruption formula](seminar/markdown/noise_formula.png)
@@ -91,7 +91,7 @@ Blurring
 --------
 
 For this test, a blur filter is applied to the input via convolution
-with a Gaussian kernel with standard deviation of $\beta$.
+with a Gaussian kernel with standard deviation of beta.
 
 ![Blur formula](seminar/markdown/blur_formula.png)
 
@@ -104,8 +104,8 @@ FGSM-Attack
 
 The Fast-Gradient-Sign-Method is performed by calculating the gradient
 of the loss with respect to the input. The input is then moved by
-$\beta$ in the direction (sign) of increasing loss. This is done for
-$30$ steps.
+beta in the direction (sign) of increasing loss. This is done for
+30 steps.
 
 ![FGSM formula](seminar/markdown/fgsm_formula.png)
 
@@ -118,12 +118,12 @@ LBFGS
 
 The Box-constrained LBFGS-attack is performed similarly to the
 FGSM-attack by calculating the gradient of the loss with respect to the
-input. The loss here, however, is the cross-entropy loss minus the $l2$
+input. The loss here, however, is the cross-entropy loss minus the l2
 distance of the current input to the original input multiplied by
-$\frac 1 \beta$ (this ensures that the computed adversarial output stays
+1 / beta (this ensures that the computed adversarial output stays
 close to the original sample). The input is then moved by the update
-rate $\varepsilon=0.002$ times the gradient of the loss. This is also
-done for $30$ steps.
+rate eps=0.02 times the gradient of the loss. This is also
+done for 30 steps.
 
 
 ![LBFGS formula](seminar/markdown/lbfgs_formula.png)
