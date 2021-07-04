@@ -42,7 +42,8 @@ class SurrogateLoss(torch.autograd.Function):
             loss = ctx.loss_fn(detached_inputs)
         extra_grads = torch.autograd.grad(loss, [d for d in detached_inputs if d.requires_grad], allow_unused=True)
         extra_grads = iter(extra_grads)
-        result = (None,) + tuple(compute_added_grads(a, next(extra_grads)) if d.requires_grad else a for a, d in zip(grad_output, detached_inputs))
+        result = (None,) + tuple(compute_added_grads(a, next(extra_grads))
+                                 if d.requires_grad else a for a, d in zip(grad_output, detached_inputs))
         try:
             next(extra_grads)
             raise ValueError("extra_grads left")
@@ -72,7 +73,8 @@ class GradientCheckpointBlock(torch.autograd.Function):
     @staticmethod
     def backward(ctx, *grad_output):
         with torch.enable_grad():
-            detached_inputs = [detach_variable(v.to(device, non_blocking=True)) for v, device in zip(ctx.saved_tensors, ctx.devices)]
+            detached_inputs = [detach_variable(v.to(device, non_blocking=True))
+                               for v, device in zip(ctx.saved_tensors, ctx.devices)]
             state = nest.pack_sequence_as(ctx.structure, detached_inputs)
             next_state = state
             rng_devices = ctx.fwd_gpu_devices
@@ -99,7 +101,8 @@ def gradient_checkpointing(state, body_fn, total_iterations, block_size=16, chec
     if block_size == 0:
         # Skip gradient_checkpointing
         for _ in range(total_iterations):
-            state = body_fn(state)
+            with torch.no_grad():
+                state = body_fn(state)
         return state
     structure = nest.map_structure(lambda x: None, state)
     state = nest.flatten(state)

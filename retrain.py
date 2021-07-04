@@ -36,6 +36,36 @@ def get_dataset(dataset, data_path, seed, device, with_augmentation=False, cutou
         trainset, validationset = torch.utils.data.random_split(trainset, [50000, 10000])
         testset = datasets.MNIST(root=data_path, train=False, download=hvd.rank() == 0, transform=transform)
         img_shape = (1, 28, 28)
+    elif dataset == "CIFAR10":
+        img_mean = [0.49139968, 0.48215827, 0.44653124]
+        img_std = [0.24703233, 0.24348505, 0.26158768]
+        transform = torchvision.transforms.Compose([
+            torchvision.transforms.ToTensor(),
+            torchvision.transforms.Normalize(img_mean, img_std),
+        ])
+        if with_augmentation:
+            transform_train = torchvision.transforms.Compose([
+                torchvision.transforms.RandomCrop(32, padding=4),
+                torchvision.transforms.RandomHorizontalFlip(),
+                torchvision.transforms.ToTensor(),
+                torchvision.transforms.Normalize(img_mean, img_std),
+                # Cutout(cutout_size),
+            ])
+        else:
+            transform_train = transform
+        img_mean = torch.as_tensor(img_mean).to(device)[..., None, None]
+        img_std = torch.as_tensor(img_std).to(device)[..., None, None]
+        trainset = datasets.CIFAR10(root=data_path, train=True, download=hvd.rank() == 0, transform=transform_train)
+        validationset = datasets.CIFAR10(root=data_path, train=True, download=hvd.rank() == 0, transform=transform)
+
+        # Split train and validationset
+        lengths = [45000, 5000]
+        indices = torch.randperm(sum(lengths)).tolist()
+        trainset = torch.utils.data.dataset.Subset(trainset, indices[:lengths[0]])
+        validationset = torch.utils.data.dataset.Subset(validationset, indices[-lengths[1]:])
+
+        testset = datasets.CIFAR10(root=data_path, train=False, download=hvd.rank() == 0, transform=transform)
+        img_shape = (3, 32, 32)
     torch.manual_seed(seed + hvd.rank())
 
     testset_x, testset_y = zip(*testset)
@@ -145,16 +175,7 @@ class AutoML(nn.Module):
         else:
             encoding = None
 
-        if learner_type == "sampled":
-            layers = min(4, max(0, iteration // iterations_depth_schedule))
-            model, encoding = sample_model(input_shape, layers=layers, encoding=encoding, blocks=2,
-                                           seed=iteration if deterministic else None, batch_norm_momentum=0)
-            tlogger.record_tabular("encoding", encoding)
-        elif learner_type == "sampled4":
-            model, encoding = sample_model(input_shape, layers=4, encoding=encoding,
-                                           seed=iteration if deterministic else None, batch_norm_momentum=0)
-            tlogger.record_tabular("encoding", encoding)
-        elif learner_type == "base":
+        if learner_type == "base":
             model = Classifier(input_shape, batch_norm_momentum=0.0, randomize_width=randomize_width)
         elif learner_type == "base_fc":
             model = Classifier(input_shape, batch_norm_momentum=0.0,
@@ -192,48 +213,46 @@ class EndlessDataLoader(object):
                 yield batch
 
 
-def main():
+def main(dataset, root, validation_learner_type, seed=1):
+
     hvd.init()
     # Load dataset
-    dataset = 'MNIST'
+    # dataset = 'MNIST'
 
     noise_size = 128
     num_inner_iterations = 64
     inner_loop_init_lr = 0.02
     inner_loop_init_momentum = 0.5
     training_iterations_schedule = 0
-    # min_training_iterations=4
-    lr = 0.02
+    # lr = 0.02
+    lr = 0
     final_relative_lr = 1e-1
     generator_batch_size = 128
     meta_batch_size = 128
     num_meta_iterations = 1
-    gradient_block_size = 1
+    # gradient_block_size = 1
+    gradient_block_size = 0
     use_intermediate_losses = 1
     data_path = './data'
     logging_period = 50
     learner_type = "base_fc"
-    validation_learner_type = "base_fc"
     warmup_iterations = None
     warmup_learner = "base"
-    final_batch_norm_forward = False
     iterations_depth_schedule = 100
-    load_from = "runs/mnist/checkpoint_2000.pkl"
-    seed = 1
+    load_from = os.path.join(root, 'checkpoint_2000.pkl')
     enable_checkpointing = True
     randomize_width = False
-    semisupervised_student_loss = True
     device = 'cuda'
 
     img_shape, trainset, validationset, (testset_x, testset_y) = get_dataset(
-        dataset, data_path, seed, device, with_augmentation=False)
+        dataset, data_path, seed=1, device=device, with_augmentation=False)
     validation_x, validation_y = zip(*validationset)
     validation_x = torch.stack(validation_x).to(device)
     validation_y = torch.as_tensor(validation_y).to(device)
 
-    # Make each worker slightly different
-    torch.manual_seed(seed + hvd.rank())
-    np.random.seed(seed + hvd.rank())
+    # # Make each worker slightly different
+    torch.manual_seed(seed)
+    # np.random.seed(seed + hvd.rank())
 
     data_loader = torch.utils.data.DataLoader(
         trainset, batch_size=meta_batch_size, shuffle=True, drop_last=True, num_workers=1, pin_memory=True)
@@ -267,14 +286,15 @@ def main():
                 optimizer.load_state_dict(state["optimizer"])
             del state
             tlogger.info("loaded from:", load_from)
-        total_num_parameters = 0
-        for name, value in automl.named_parameters():
-            tlogger.info("Optimizing parameter:", name, value.shape)
-            total_num_parameters += np.prod(value.shape)
-        tlogger.info("Total number of parameters:", int(total_num_parameters))
+        # total_num_parameters = 0
+        # for name, value in automl.named_parameters():
+        #     tlogger.info("Optimizing parameter:", name, value.shape)
+        #     total_num_parameters += np.prod(value.shape)
+        # tlogger.info("Total number of parameters:", int(total_num_parameters))
 
     def compute_learner(learner, iterations=num_inner_iterations, callback=None):
         learner.model.train()
+
         names, params = list(zip(*learner.model.get_parameters()))
         buffers = list(zip(*learner.model.named_buffers()))
         if buffers:
@@ -313,12 +333,14 @@ def main():
         losses = {}
         accuracies = {}
 
+        # @debug
         def intermediate_loss(params):
             params = nest.pack_sequence_as(initial_params, params[1:])
             params, buffers = params
             x, y = next(meta_generator)
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
+            # debug((x, y))
             learner.model.set_parameters(list(zip(names, split_params(params))))
             if buffer_names:
                 learner.model.set_buffers(list(zip(buffer_names, split_buffer(buffers))))
@@ -329,11 +351,16 @@ def main():
                 loss = F.nll_loss(pred, y) + F.nll_loss(aux_pred, y)
             else:
                 loss = F.nll_loss(pred, y)
+            # debug(loss)
             return loss
+
+        learner.it = 0
 
         def body(args):
             it, params, optimizer_state = args
             x, y_one_hot = automl.generator(it)
+            learner.it = it.item()
+
             with torch.enable_grad():
                 if use_intermediate_losses > 0 and (it >= use_intermediate_losses and it % use_intermediate_losses == 0):
                     params = SurrogateLoss.apply(intermediate_loss, it, *nest.flatten(params))
@@ -343,19 +370,20 @@ def main():
                     if not p.requires_grad:
                         p.requires_grad = True
 
+                # if it < 4:
+                #     parx = list(split_params(params))
+                #     debug(parx)
+
                 learner.model.set_parameters(list(zip(names, split_params(params))))
                 if buffer_names:
                     learner.model.set_buffers(list(zip(buffer_names, split_buffer(buffers))))
                 learner.model.train()
+                # debug(x)
                 output = learner.model(x)
-                if isinstance(output, tuple):
-                    output1, output2 = output
-                    loss = - (output1 * y_one_hot).sum() * (1 / output1.shape[0])
-                    loss = loss - (output2 * y_one_hot).sum() * (1 / output2.shape[0])
-                    pred = output1
-                else:
-                    loss = -(output * y_one_hot).sum() * (1 / output.shape[0])
-                    pred = output
+                # debug(output)
+                loss = -(output * y_one_hot).sum() * (1 / output.shape[0])
+                pred = output
+                # debug(loss)
                 if it.item() not in losses:
                     losses[it.item()] = loss.detach().cpu().item()
                     accuracies[it.item()] = (pred.max(-1).indices ==
@@ -363,7 +391,8 @@ def main():
 
                 grads = grad(loss, params, create_graph=x.requires_grad, allow_unused=True)
             # assert len(grads) == len(names)
-            new_params, optimizer_state = learner.optimizer(it, params, grads, optimizer_state)
+            new_params, optimizer_state = learner.optimizer(it, params, grads, optimizer_state, split_params)
+
             buffers = list(learner.model.buffers())
             buffers = [torch.cat([b.flatten() for b in buffers])] if buffers else buffers
             if callback is not None:
@@ -386,11 +415,6 @@ def main():
         learner.model.set_parameters(list(zip(names, split_params(params))))
         if buffer_names:
             learner.model.set_buffers(list(zip(buffer_names, split_buffer(buffers))))
-
-        if final_batch_norm_forward:
-            x, _ = automl.generator(torch.randint(iterations, size=()))
-            learner.model.train()
-            learner.model(x)
 
         return learner, losses, accuracies
 
@@ -424,52 +448,46 @@ def main():
             meta_y = meta_y.to('cuda', non_blocking=True)
 
             tstart_forward = time.time()
-            if semisupervised_student_loss:
-                # TODO: Learn batchnorm momentum and eps
-                sample_learner_type = learner_type
-                if warmup_iterations is not None and iteration < warmup_iterations:
-                    sample_learner_type = warmup_learner
-                learner, encoding = automl.sample_learner(img_shape, device,
-                                                          allow_nas=False,
-                                                          randomize_width=randomize_width,
-                                                          learner_type=sample_learner_type,
-                                                          iteration_maps_seed=False,
-                                                          iteration=iteration,
-                                                          deterministic=False,
-                                                          iterations_depth_schedule=iterations_depth_schedule)
-                automl.train()
 
-                if lr == 0.0:
-                    with torch.no_grad():
-                        learner, intermediate_losses, intermediate_accuracies = compute_learner(
-                            learner, iterations=training_iterations)
-                else:
-                    learner, intermediate_losses, intermediate_accuracies = compute_learner(
-                        learner, iterations=training_iterations)
-                # TODO: remove this requirement
-                params = list(learner.model.get_parameters())
-                learner.model.eval()
+            sample_learner_type = learner_type
+            if warmup_iterations is not None and iteration < warmup_iterations:
+                sample_learner_type = warmup_learner
+            # torch.manual_seed(1)
+            # np.random.seed(1)
+            learner, encoding = automl.sample_learner(img_shape, device,
+                                                      allow_nas=False,
+                                                      randomize_width=randomize_width,
+                                                      learner_type=sample_learner_type,
+                                                      iteration_maps_seed=False,
+                                                      iteration=iteration,
+                                                      deterministic=False,
+                                                      iterations_depth_schedule=iterations_depth_schedule)
+            automl.train()
 
-                # Evaluate learner on training and back-prop
-                torch.cuda.empty_cache()
-                pred = learner.model(meta_x)
-                if isinstance(pred, tuple):
-                    pred, aux_pred = pred
-                    loss = F.nll_loss(pred, meta_y) + F.nll_loss(aux_pred, meta_y)
-                else:
-                    loss = F.nll_loss(pred, meta_y)
-                accuracy = (pred.max(-1).indices == meta_y).to(torch.float).mean()
-                tlogger.record_tabular("TimeElapsedForward", time.time() - tstart_forward)
-                num_parameters = sum([a[1].size().numel() for a in params])
-                tlogger.record_tabular("TrainingLearnerParameters", num_parameters)
-                tlogger.record_tabular("optimizer", type(learner.optimizer).__name__)
-                tlogger.record_tabular('meta_training_loss', loss.item())
-                tlogger.record_tabular('meta_training_accuracy', accuracy.item())
-                tlogger.record_tabular('training_accuracies', intermediate_accuracies)
-                tlogger.record_tabular('training_losses', intermediate_losses)
-                tlogger.record_tabular("dag", encoding)
+            learner, intermediate_losses, intermediate_accuracies = compute_learner(
+                learner, iterations=training_iterations)
+            # TODO: remove this requirement
+            params = list(learner.model.get_parameters())
+            learner.model.eval()
+
+            # Evaluate learner on training and back-prop
+            torch.cuda.empty_cache()
+            pred = learner.model(meta_x)
+            if isinstance(pred, tuple):
+                pred, aux_pred = pred
+                loss = F.nll_loss(pred, meta_y) + F.nll_loss(aux_pred, meta_y)
             else:
-                loss = torch.as_tensor(0.0)
+                loss = F.nll_loss(pred, meta_y)
+            accuracy = (pred.max(-1).indices == meta_y).to(torch.float).mean()
+            tlogger.record_tabular("TimeElapsedForward", time.time() - tstart_forward)
+            num_parameters = sum([a[1].size().numel() for a in params])
+            tlogger.record_tabular("TrainingLearnerParameters", num_parameters)
+            tlogger.record_tabular("optimizer", type(learner.optimizer).__name__)
+            tlogger.record_tabular('meta_training_loss', loss.item())
+            tlogger.record_tabular('meta_training_accuracy', accuracy.item())
+            tlogger.record_tabular('training_accuracies', intermediate_accuracies)
+            tlogger.record_tabular('training_losses', intermediate_losses)
+            tlogger.record_tabular("dag", encoding)
 
             if lr > 0.0:
                 tstart_backward = time.time()
@@ -495,7 +513,16 @@ def main():
             val_loss, val_accuracy = [], []
             test_loss, test_accuracy = [], []
 
+            # print('Saving learner model')
+            path = os.path.join(root, '10_gtn')
+            if not os.path.exists(path):
+                os.makedirs(path)
+            count = len([model for model in os.listdir(path) if validation_learner_type in model])
+            path = f'{path}/{validation_learner_type}_{count + 1}.pt'
+
             def compute_learner_callback(learner):
+                if hasattr(learner, 'it') and learner.it == 10:
+                    torch.save(learner.model, path)
                 # Validation set
                 validation_loss, single_validation_accuracy, validation_accuracy = evaluate_set(
                     learner.model, validation_x, validation_y, "validation")
@@ -508,6 +535,7 @@ def main():
                 test_accuracy.append(accuracy)
 
             tlogger.info("sampling another learner_type ({}) for validation".format(validation_learner_type))
+            # debug('before', learner.model.convs[0].weight)
             learner, _ = automl.sample_learner(img_shape, device,
                                                allow_nas=False,
                                                learner_type=validation_learner_type,
@@ -520,6 +548,8 @@ def main():
             with torch.no_grad():
                 learner, _, _ = compute_learner(learner, iterations=training_iterations,
                                                 callback=compute_learner_callback)
+            # debug(learner.model._named_parameters)
+            # debug.embed()
 
             tlogger.record_tabular("validation_losses", val_loss)
             tlogger.record_tabular("validation_accuracies", val_accuracy)
@@ -535,40 +565,40 @@ def main():
             for k, v in best_optimizers.items():
                 tlogger.record_tabular("{}_last_accuracy".format(k), v)
 
-            if hvd.rank() == 0:
-                tlogger.dump_tabular()
-
-                if (iteration == 1 or iteration % 100 == 0 or is_last_iteration):
-                    with torch.no_grad():
-                        if enable_checkpointing:
-                            batches = []
-                            for it in range(num_inner_iterations):
-                                x, y = automl.generator(it)
-                                batches.append((x.cpu().numpy(), y.cpu().numpy()))
-                            batches = list(reversed(batches))
-                            with open(os.path.join(tlogger.get_dir(), 'samples_{}.pkl'.format(iteration)), 'wb') as file:
-                                pickle.dump(batches, file)
-                            del batches
-                            tlogger.info("Saved:", os.path.join(tlogger.get_dir(), 'samples_{}.pkl'.format(iteration)))
-                        ckpt = os.path.join(tlogger.get_dir(), 'checkpoint_{}.pkl'.format(iteration))
-                        torch.save({
-                            "optimizer": optimizer.state_dict(),
-                            "model": automl.state_dict(),
-                        }, ckpt)
-                        tlogger.info("Saved:", ckpt)
-
+            # print(learner.model)
             print()
             print(('{:>15}' * 4).format('', 'train', 'val', 'test'))
             for i, (train, val, test) in enumerate(zip(intermediate_accuracies.values(), val_accuracy, test_accuracy)):
                 print(('{:>15}' + '{:>15.3f}' * 3).format(i, train, val, test))
 
-            valsets = {'validation': (validation_x, validation_y),
-                       'test': (testset_x, testset_y), }
-            from utils import evaluate_set as evalx
+            print('Saving learner model')
+            path = os.path.join(root, 'gtn')
+            if not os.path.exists(path):
+                os.makedirs(path)
+            count = len([model for model in os.listdir(path) if validation_learner_type in model])
+            path = f'{path}/{validation_learner_type}_{count + 1}.pt'
+            torch.save(learner.model, path)
 
-            for name, (x, y) in valsets.items():
-                acc = evalx(learner.model, x, y)
-                print(f'{name} accuracy: {acc:.3f}')
+            # # EXTRA VALIDATION
+            # _, trainset2, validationset2, _ = get_dataset(
+            #     dataset, data_path, seed=7777, device=device, with_augmentation=False)
+            # validation_x2, validation_y2 = zip(*validationset2)
+            # validation_x2 = torch.stack(validation_x2).to(device)
+            # validation_y2 = torch.as_tensor(validation_y2).to(device)
+
+            # train_x2, train_y2 = zip(*trainset2)
+            # train_x2 = torch.stack(train_x2).to(device)
+            # train_y2 = torch.as_tensor(train_y2).to(device)
+
+            # valsets = {'validation': (validation_x, validation_y),
+            #            'trainset2': (train_x2, train_y2),
+            #            'validation2': (validation_x2, validation_y2),
+            #            'test': (testset_x, testset_y), }
+            # from utils import evaluate_set as evalx
+
+            # for name, (x, y) in valsets.items():
+            #     acc = evalx(learner.model, x, y)
+            #     print(f'{name} accuracy: {acc:.3f}')
 
             if is_last_iteration:
                 break
@@ -580,4 +610,24 @@ def main():
 if __name__ == "__main__":
     from tabular_logger import set_tlogger
     set_tlogger("default")
-    main()
+
+    dataset = 'CIFAR10'
+    # dataset = 'MNIST'
+    # learner_type = 'base_larger'
+    learner_type = 'base_larger3'
+    root = f'runs/{dataset}/{learner_type}'
+
+    for ltype in [
+        'base',
+        #   'base_fc',
+        'linear',
+        'base_larger',
+        'base_larger2',
+        'base_larger3',
+        'base_larger3_global_pooling',
+        'base_larger4_global_pooling',
+        'base_larger4',
+    ]:
+
+        for i in range(5):
+            main(dataset, root, validation_learner_type=ltype, seed=i)

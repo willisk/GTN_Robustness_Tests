@@ -66,12 +66,14 @@ class Classifier(AbstractClassifier):
             WeightNormConv2d(input_shape[0], conv1_size, kernel_size=3, padding=1, bias=False),
             nn.MaxPool2d(3, 2, padding=1),
             BatchNormMeanOnly(conv1_size, momentum=batch_norm_momentum),
+            # XXBatchNorm2dMeanOnly(conv1_size, momentum=batch_norm_momentum),
             nn.LeakyReLU(0.1),
 
             # Conv2
             WeightNormConv2d(conv1_size, conv2_size, kernel_size=3, padding=1, bias=False),
             nn.MaxPool2d(3, 2, padding=1),
             BatchNormMeanOnly(conv2_size, momentum=batch_norm_momentum),
+            # XXBatchNorm2dMeanOnly(conv2_size, momentum=batch_norm_momentum),
             nn.LeakyReLU(0.1),
         )
         if use_global_pooling:
@@ -82,6 +84,7 @@ class Classifier(AbstractClassifier):
             self.fc = nn.Sequential(
                 WeightNormLinear(conv2_size * width, fc1_size),
                 BatchNormMeanOnly(fc1_size, momentum=batch_norm_momentum),
+                # XXBatchNorm1dMeanOnly(fc1_size, momentum=batch_norm_momentum),
                 nn.LeakyReLU(0.1),
                 WeightNormLinear(fc1_size, 10)
             )
@@ -138,7 +141,7 @@ class ClassifierLarger(AbstractClassifier):
             BatchNormMeanOnly(conv2_size, momentum=batch_norm_momentum),
             nn.LeakyReLU(0.1),
         )
-        self.global_pooling = nn.Identity()#nn.AdaptiveAvgPool2d(1)
+        self.global_pooling = nn.Identity()  # nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Sequential(
             WeightNormLinear(conv2_size * width, fc1_size),
             BatchNormMeanOnly(fc1_size, momentum=batch_norm_momentum),
@@ -330,6 +333,9 @@ class Encoder(AbstractClassifier):
 
 
 # Functional BatchNorm
+from debug import debug
+
+
 def fBatchNorm(x, running_mean, running_variance, gamma, beta, eps, momentum, training, mean_only):
     if training:
         if mean_only:
@@ -344,6 +350,7 @@ def fBatchNorm(x, running_mean, running_variance, gamma, beta, eps, momentum, tr
                 x_var, x_mean = torch.var_mean(x, dim=[0, 2, 3])
         # Linear interpolation: running_mean = running_mean * momentum + x_mean * (1 - momentum)
         running_mean = torch.lerp(x_mean, running_mean, momentum)
+        running_mean = running_mean.detach()
         if not mean_only:
             running_variance = torch.lerp(x_var, running_variance, momentum)
     else:
@@ -361,7 +368,8 @@ def fBatchNorm(x, running_mean, running_variance, gamma, beta, eps, momentum, tr
         if mean_only:
             normalized = x + (beta - x_mean)[..., None, None]
         else:
-            normalized = (x - x_mean[..., None, None]) * (gamma[..., None, None] * (x_var[..., None, None] + eps).rsqrt()) + beta[..., None, None]
+            normalized = (x - x_mean[..., None, None]) * (gamma[..., None, None] *
+                                                          (x_var[..., None, None] + eps).rsqrt()) + beta[..., None, None]
         return normalized, running_mean, running_variance
 
 
@@ -370,22 +378,26 @@ class BatchNorm(nn.Module):
     We have to implement batch norm as a weird RNN model. because of gradient checkpointing
     TODO: Undo this hack
     """
+
     def __init__(self, size, momentum=0.9, eps=1e-5, mean_only=False):
         super().__init__()
-        self.bias = nn.Parameter(torch.zeros(size))
+        # self.bias = nn.Parameter(torch.zeros(size))
+        self.register_buffer("bias", torch.zeros(size))
         self.momentum = momentum
         self.register_buffer("running_mean", torch.zeros(size))
         self.mean_only = mean_only
         self.eps = eps
         if not mean_only:
             self.register_buffer("running_variance", torch.ones(size))
-            self.gamma = nn.Parameter(torch.ones(size))
+            # self.gamma = nn.Parameter(torch.ones(size))
+            self.register_buffer("gamma", torch.zeros(size))
         else:
             self.running_variance = None
             self.gamma = None
 
     def forward(self, x):
-        returned = fBatchNorm(x, self.running_mean, self.running_variance, self.gamma, self.bias, self.eps, self.momentum, self.training, self.mean_only)
+        returned = fBatchNorm(x, self.running_mean, self.running_variance, self.gamma,
+                              self.bias, self.eps, self.momentum, self.training, self.mean_only)
         x, self.running_mean, self.running_variance = returned
         return x
 
@@ -393,6 +405,23 @@ class BatchNorm(nn.Module):
 class BatchNormMeanOnly(BatchNorm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs, mean_only=True)
+
+
+from debug import debug
+
+
+class XXBatchNorm1dMeanOnly(nn.BatchNorm1d):
+    def forward(self, x):
+        self.running_var.fill_(1)
+        x = super().forward(x)
+        return x
+
+
+class XXBatchNorm2dMeanOnly(nn.BatchNorm2d):
+    def forward(self, x):
+        self.running_var.fill_(1)
+        x = super().forward(x)
+        return x
 
 
 class BatchNormMeanOnlyOnline(nn.Module):
@@ -458,25 +487,26 @@ class Deconv(nn.Module):
         return x
 
 
-def make_weight_norm_layer(base_cls):
-    class WeightNorm(base_cls):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.weight_g = nn.Parameter(torch.norm_except_dim(self.weight, 2, 0).data)
-
-        def forward(self, x):
-            x = super().forward(x)
-            x = x * (self.weight_g / torch.norm_except_dim(self.weight, 2, 0)).transpose(1, 0)
-            return x
-    return WeightNorm
-
-
 class Linear(nn.Linear):
     def reset_parameters(self):
         super().reset_parameters()
         torch.nn.init.kaiming_normal_(self.weight)
 
+
+class WeightNormLinear(Linear):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.weight_g = nn.Parameter(torch.norm_except_dim(self.weight, 2, 0).data)
+
+    def forward(self, x):
+        x = super().forward(x)
+        x = x * (self.weight_g / torch.norm_except_dim(self.weight, 2, 0)).transpose(1, 0)
+        return x
+
+
 from exconv import ExConv2d
+
+
 class Conv2d(nn.Conv2d):
     def reset_parameters(self):
         super().reset_parameters()
@@ -489,14 +519,26 @@ class Conv2d(nn.Conv2d):
             return super().forward(x)
 
 
-WeightNormLinear = make_weight_norm_layer(Linear)
-WeightNormConv2d = make_weight_norm_layer(Conv2d)
+class WeightNormConv2d(Conv2d):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.weight_g = nn.Parameter(torch.norm_except_dim(self.weight, 2, 0).data)
+
+    def forward(self, x):
+        x = super().forward(x)
+        x = x * (self.weight_g / torch.norm_except_dim(self.weight, 2, 0)).transpose(1, 0)
+        return x
+
+
+# WeightNormLinear = make_weight_norm_layer(Linear)
+# WeightNormConv2d = make_weight_norm_layer(Conv2d)
 
 
 class ConvNxNBn(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, padding=0, groups=1, batch_norm_momentum=0.5):
         super().__init__()
-        self.conv = WeightNormConv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding, groups=groups, bias=False)
+        self.conv = WeightNormConv2d(in_channels, out_channels, kernel_size=kernel_size,
+                                     padding=padding, groups=groups, bias=False)
         self.bn = BatchNormMeanOnly(out_channels, momentum=batch_norm_momentum)
 
     def forward(self, x):
@@ -518,7 +560,8 @@ class Conv3x3Bn(ConvNxNBn):
 class SeparableConv3x3Bn(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, batch_norm_momentum=0.5):
         super().__init__()
-        self.conv = WeightNormConv2d(in_channels, in_channels, kernel_size=kernel_size, padding=padding, groups=in_channels, bias=False)
+        self.conv = WeightNormConv2d(in_channels, in_channels, kernel_size=kernel_size,
+                                     padding=padding, groups=in_channels, bias=False)
         self.conv2 = WeightNormConv2d(in_channels, out_channels, kernel_size=1, padding=0, groups=1, bias=False)
         self.bn = BatchNormMeanOnly(out_channels, momentum=batch_norm_momentum)
 
@@ -576,7 +619,8 @@ class SimpleModel(AbstractClassifier):
 
         for block_num in range(blocks):
             if block_num > 0:
-                self.layers.add_module(str(len(self.layers) + 1), Conv3x3MaxPool(img_shape[0], img_shape[0] * 2, batch_norm_momentum=batch_norm_momentum))
+                self.layers.add_module(
+                    str(len(self.layers) + 1), Conv3x3MaxPool(img_shape[0], img_shape[0] * 2, batch_norm_momentum=batch_norm_momentum))
                 img_shape = (img_shape[0] * 2, img_shape[1] // 2, img_shape[2] // 2)
 
             for arg in arguments:
@@ -604,6 +648,7 @@ def sample_model(img_shape, layers=2, blocks=2, encoding=None, seed=None):
         ops = encoding
     return SimpleModel(img_shape, ops, blocks=blocks), ops
 
+
 class Generator2(nn.Module):
     def __init__(self, nz, img_shape):
         super(Generator2, self).__init__()
@@ -613,7 +658,7 @@ class Generator2(nn.Module):
         nc = img_shape[0]
         self.main = nn.Sequential(
             # input is Z, going into a convolution
-            nn.ConvTranspose2d(     nz, ngf * 8, 4, 1, 0, bias=False),
+            nn.ConvTranspose2d(nz, ngf * 8, 4, 1, 0, bias=False),
             nn.BatchNorm2d(ngf * 8),
             nn.ReLU(True),
             # state size. (ngf*8) x 4 x 4
@@ -625,11 +670,11 @@ class Generator2(nn.Module):
             nn.BatchNorm2d(ngf * 2),
             nn.ReLU(True),
             # state size. (ngf*2) x 16 x 16
-            nn.ConvTranspose2d(ngf * 2,     ngf, 4, 2, 1, bias=False),
+            nn.ConvTranspose2d(ngf * 2, ngf, 4, 2, 1, bias=False),
             nn.BatchNorm2d(ngf),
             nn.ReLU(True),
             # state size. (ngf) x 32 x 32
-            nn.ConvTranspose2d(    ngf,      nc, 1, 2, 1, bias=False),
+            nn.ConvTranspose2d(ngf, nc, 1, 2, 1, bias=False),
             nn.Tanh()
             # state size. (nc) x 64 x 64
         )

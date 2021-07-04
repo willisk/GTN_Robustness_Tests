@@ -26,7 +26,7 @@ class TLogger(object):
         print('{asctime} {message}'.format(asctime=datetime.now().strftime(datefmt), message=' '.join(strings)))
 
     def get_dir(self):
-        result = join("/tmp/gtn", self.name)
+        result = join("tmp/gtn", self.name)
         os.makedirs(result, exist_ok=True)
         return result
 
@@ -41,12 +41,16 @@ class TLogger(object):
             self.info("progress:", json.dumps(self.values))
             self.values.clear()
 
+
 _tlogger = None
+
+
 def CURRENT():
     global _tlogger
     if not _tlogger:
         _tlogger = TLogger()
     return _tlogger
+
 
 def set_tlogger(*args, **kwargs):
     global _tlogger

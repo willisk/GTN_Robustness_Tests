@@ -28,6 +28,9 @@ class BaseOptimizer(nn.Module):
         return new_params, state
 
 
+from debug import debug
+
+
 class SGD(BaseOptimizer):
     def __init__(self, init_lr, init_momentum, num_inner_iterations=None):
         super().__init__()
@@ -50,17 +53,36 @@ class SGD(BaseOptimizer):
         return torch.zeros_like(param)
 
     @staticmethod
-    def compute_update(it, param, grad, state, momentum, lr):
+    def compute_update(it, param, grad, state, momentum, lr, tmp_split):
         if state is None:
             state = grad
         state = state * momentum + grad
+        out = param - lr * state
+        # if it < 3:
+        #     debug(tmp_split(param))
+        #     debug(tmp_split(grad))
+        #     debug(tmp_split(state))
+        #     debug(tmp_split(out))
+        #     # print('p', param[:10])
+        #     # print('grad', grad[:10])
+        #     # print('buf', state[:10])
+        #     # print('out', out[:10])
+        #     # print('p', param[-10:])
+        #     # print('grad', grad[-10:])
+        #     # print('buf', state[-10:])
+        #     # print('out', out[-10:])
 
-        return param - lr * state, state
+        return out, state
+        # return param - lr * state, state
 
-    def forward(self, it, params, grads, state=None):
+    # @debug
+    def forward(self, it, params, grads, state=None, tmp_split=None):
         momentum = self.momentum[it]
         lr = self.lr[it]
-        new_params, state = zip(*[self.compute_update(it, p, g, s, momentum, lr) for p, g, s in zip(params, grads, state)])
+        # if it < 3:
+        #     debug(params)
+        new_params, state = zip(*[self.compute_update(it, p, g, s, momentum, lr, tmp_split)
+                                for i, (p, g, s) in enumerate(zip(params, grads, state))])
         return new_params, state
 
 
@@ -106,7 +128,8 @@ class Adam(SGD):
 
         # This seems to be a huge bottleneck right now
         t = torch.as_tensor(it + 1).to(torch.float).to(lr.device)
-        new_params, state = zip(*[self.compute_update(p, g, s, beta1, beta2, lr, t, eps, eps1, eps2) for p, g, s in zip(params, grads, state)])
+        new_params, state = zip(*[self.compute_update(p, g, s, beta1, beta2, lr, t, eps, eps1, eps2)
+                                for p, g, s in zip(params, grads, state)])
         return new_params, state
 
 
@@ -117,7 +140,8 @@ class RMSProp(SGD):
         self.log_eps = nn.Parameter(torch.as_tensor(np.log(1e-8)))
 
         self.compute_update = torch.jit.trace(RMSProp.compute_update_,
-                                              (torch.as_tensor(0), torch.rand(3), torch.rand(3), (torch.rand(3), torch.rand(3)), torch.as_tensor(0.0), torch.as_tensor(0.0), torch.as_tensor(0.0), torch.as_tensor(0.0))
+                                              (torch.as_tensor(0), torch.rand(3), torch.rand(3), (torch.rand(3), torch.rand(3)), torch.as_tensor(
+                                                  0.0), torch.as_tensor(0.0), torch.as_tensor(0.0), torch.as_tensor(0.0))
                                               )
 
     @property
@@ -148,5 +172,6 @@ class RMSProp(SGD):
         eps = self.eps
         momentum = self.momentum[it]
         lr = self.lr[it]
-        new_params, state = zip(*[self.compute_update(it, p, g, s, decay, momentum, lr, eps) for p, g, s in zip(params, grads, state)])
+        new_params, state = zip(*[self.compute_update(it, p, g, s, decay, momentum, lr, eps)
+                                for p, g, s in zip(params, grads, state)])
         return new_params, state

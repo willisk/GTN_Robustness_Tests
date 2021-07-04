@@ -11,9 +11,8 @@
     "generator_type": "cgtn",
     "meta_optimizer": "adam",
     "meta_batch_size": 128,
-    "learner_type": "base_fc",
-    "validation_learner_type": "base_fc",
-
+    "learner_type": "base_larger3",
+    "validation_learner_type": "base_larger3",
     "inner_loop_init_momentum": 0.5,
     "training_iterations_schedule": 0,
     "virtual_batch_size": 1,

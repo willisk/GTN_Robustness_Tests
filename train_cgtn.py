@@ -51,7 +51,7 @@ def main(num_inner_iterations=64,
          intermediate_losses_ratio=1.0,
          data_path='./data',
          meta_optimizer="adam",
-         dataset='MNIST',
+         dataset='CIFAR10',
          logging_period=10,
          generator_type="cgtn",
          learner_type="base",
@@ -105,7 +105,8 @@ def main(num_inner_iterations=64,
     if generator_type == "semisupervised":
         unlabelled_trainset, trainset = torch.utils.data.random_split(trainset, [49500, 500])
 
-    data_loader = torch.utils.data.DataLoader(trainset, batch_size=meta_batch_size, shuffle=True, drop_last=True, num_workers=1, pin_memory=True)
+    data_loader = torch.utils.data.DataLoader(
+        trainset, batch_size=meta_batch_size, shuffle=True, drop_last=True, num_workers=1, pin_memory=True)
     data_loader = EndlessDataLoader(data_loader)
 
     if generator_type == "cgtn":
@@ -160,7 +161,8 @@ def main(num_inner_iterations=64,
         )
     elif generator_type == "semisupervised":
         generator = SemisupervisedGenerator(
-            torch.utils.data.DataLoader(unlabelled_trainset, batch_size=generator_batch_size, shuffle=True, drop_last=True),
+            torch.utils.data.DataLoader(unlabelled_trainset, batch_size=generator_batch_size,
+                                        shuffle=True, drop_last=True),
             num_inner_iterations=num_inner_iterations,
             device=device,
             classifier=models.ClassifierLarger2(img_shape, batch_norm_momentum=0.9, randomize_width=False)
@@ -192,7 +194,8 @@ def main(num_inner_iterations=64,
     elif meta_optimizer == "sgd":
         optimizer = torch.optim.SGD(automl.parameters(), lr=lr, momentum=rms_momentum)
     elif meta_optimizer == "RMS":
-        optimizer = torch.optim.RMSprop(automl.parameters(), lr=lr, alpha=adam_beta1, momentum=rms_momentum, eps=adam_epsilon)
+        optimizer = torch.optim.RMSprop(automl.parameters(), lr=lr, alpha=adam_beta1,
+                                        momentum=rms_momentum, eps=adam_epsilon)
     else:
         raise NotImplementedError()
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, num_meta_iterations, lr * final_relative_lr)
@@ -303,7 +306,8 @@ def main(num_inner_iterations=64,
                     pred = output
                 if it.item() not in losses:
                     losses[it.item()] = loss.detach().cpu().item()
-                    accuracies[it.item()] = (pred.max(-1).indices == y_one_hot.max(-1).indices).to(torch.float).mean().item()
+                    accuracies[it.item()] = (pred.max(-1).indices ==
+                                             y_one_hot.max(-1).indices).to(torch.float).mean().item()
 
                 grads = grad(loss, params, create_graph=x.requires_grad, allow_unused=True)
             # assert len(grads) == len(names)
@@ -381,9 +385,11 @@ def main(num_inner_iterations=64,
 
                 if lr == 0.0:
                     with torch.no_grad():
-                        learner, intermediate_losses, intermediate_accuracies = compute_learner(learner, iterations=training_iterations, keep_grad=lr > 0.0)
+                        learner, intermediate_losses, intermediate_accuracies = compute_learner(
+                            learner, iterations=training_iterations, keep_grad=lr > 0.0)
                 else:
-                    learner, intermediate_losses, intermediate_accuracies = compute_learner(learner, iterations=training_iterations, keep_grad=lr > 0.0)
+                    learner, intermediate_losses, intermediate_accuracies = compute_learner(
+                        learner, iterations=training_iterations, keep_grad=lr > 0.0)
                 # TODO: remove this requirement
                 params = list(learner.model.get_parameters())
                 learner.model.eval()
@@ -450,7 +456,8 @@ def main(num_inner_iterations=64,
             else:
                 scheduler.step(iteration - 1)
 
-        is_last_iteration = iteration == num_meta_iterations or (max_elapsed_time is not None and time.time() - tstart > max_elapsed_time)
+        is_last_iteration = iteration == num_meta_iterations or (
+            max_elapsed_time is not None and time.time() - tstart > max_elapsed_time)
         if np.isnan(loss.item()):
             tlogger.info("NaN training loss, terminating")
             is_last_iteration = True
@@ -461,45 +468,40 @@ def main(num_inner_iterations=64,
             val_loss, val_accuracy = [], []
             test_loss, test_accuracy = [], []
 
-            if generator_type == "semisupervised":
+            def compute_learner_callback(learner):
                 # Validation set
-                evaluate_set(generator.classifier, validation_x, validation_y, "generator_validation")
+                validation_loss, single_validation_accuracy, validation_accuracy = evaluate_set(
+                    learner.model, validation_x, validation_y, "validation")
+                val_loss.append(validation_loss)
+                val_accuracy.append(validation_accuracy)
+                best_optimizers[type(learner.optimizer).__name__] = single_validation_accuracy.item()
                 # Test set
-                evaluate_set(generator.classifier, testset_x, testset_y, "generator_test")
-            else:
-                def compute_learner_callback(learner):
-                    # Validation set
-                    validation_loss, single_validation_accuracy, validation_accuracy = evaluate_set(learner.model, validation_x, validation_y, "validation")
-                    val_loss.append(validation_loss)
-                    val_accuracy.append(validation_accuracy)
-                    best_optimizers[type(learner.optimizer).__name__] = single_validation_accuracy.item()
-                    # Test set
-                    loss, _, accuracy = evaluate_set(learner.model, testset_x, testset_y, "test")
-                    test_loss.append(loss)
-                    test_accuracy.append(accuracy)
+                loss, _, accuracy = evaluate_set(learner.model, testset_x, testset_y, "test")
+                test_loss.append(loss)
+                test_accuracy.append(accuracy)
 
-                tlogger.info("sampling another learner_type ({}) for validation".format(validation_learner_type))
-                learner, _ = automl.sample_learner(img_shape, device,
-                                                   allow_nas=False,
-                                                   learner_type=validation_learner_type,
-                                                   iteration_maps_seed=iteration_maps_seed,
-                                                   iteration=iteration,
-                                                   deterministic=deterministic,
-                                                   iterations_depth_schedule=iterations_depth_schedule
-                                                   )
-                if step_by_step_validation:
-                    compute_learner_callback(learner)
-                with torch.no_grad():
-                    learner, _, _ = compute_learner(learner, iterations=training_iterations, keep_grad=False,
-                                                    callback=compute_learner_callback if step_by_step_validation else None)
-                if not step_by_step_validation:
-                    compute_learner_callback(learner)
+            tlogger.info("sampling another learner_type ({}) for validation".format(validation_learner_type))
+            learner, _ = automl.sample_learner(img_shape, device,
+                                               allow_nas=False,
+                                               learner_type=validation_learner_type,
+                                               iteration_maps_seed=iteration_maps_seed,
+                                               iteration=iteration,
+                                               deterministic=deterministic,
+                                               iterations_depth_schedule=iterations_depth_schedule
+                                               )
+            if step_by_step_validation:
+                compute_learner_callback(learner)
+            with torch.no_grad():
+                learner, _, _ = compute_learner(learner, iterations=training_iterations, keep_grad=False,
+                                                callback=compute_learner_callback if step_by_step_validation else None)
+            if not step_by_step_validation:
+                compute_learner_callback(learner)
 
-                tlogger.record_tabular("validation_losses", val_loss)
-                tlogger.record_tabular("validation_accuracies", val_accuracy)
-                validation_accuracy = val_accuracy[-1]
-                tlogger.record_tabular("test_losses", test_loss)
-                tlogger.record_tabular("test_accuracies", test_accuracy)
+            tlogger.record_tabular("validation_losses", val_loss)
+            tlogger.record_tabular("validation_accuracies", val_accuracy)
+            validation_accuracy = val_accuracy[-1]
+            tlogger.record_tabular("test_losses", test_loss)
+            tlogger.record_tabular("test_accuracies", test_accuracy)
 
             # Extra logging
             tlogger.record_tabular('TimeElapsedIter', (tstart_validation - last_iteration) / virtual_batch_size)
@@ -512,7 +514,7 @@ def main(num_inner_iterations=64,
             if hvd.rank() == 0:
                 tlogger.dump_tabular()
 
-                if (iteration == 1 or iteration % 1000 == 0 or is_last_iteration):
+                if (iteration == 1 or iteration % 500 == 0 or is_last_iteration):
                     with torch.no_grad():
                         if enable_checkpointing:
                             batches = []
@@ -637,10 +639,18 @@ def maybe_allreduce_grads(model):
         tlogger.record_tabular("TimeElapsedAllReduce", time.time() - tstart_reduce)
         if time.time() - tstart_reduce > 5:
             import socket
-            tlogger.info("Allreduce took more than 5 seconds for node {} (rank {})".format(socket.gethostname(), hvd.rank()))
+            tlogger.info("Allreduce took more than 5 seconds for node {} (rank {})".format(
+                socket.gethostname(), hvd.rank()))
 
 
+from debug import debug
+
+
+# @debug
 def evaluate_set(model, x, y, name):
+    # import matplotlib.pyplot as plt
+    # import ipdb
+    # ipdb.set_trace()
     with torch.no_grad():
         batch_size = 1000
         validation_pred = []
@@ -674,12 +684,14 @@ class CGTN(nn.Module):
             labels = torch.reshape(labels, (num_inner_iterations, generator_batch_size))
             self.curriculum_labels = nn.Parameter(labels, requires_grad=False)
         else:
-            self.curriculum_labels = nn.Parameter(torch.randint(10, size=(num_inner_iterations, generator_batch_size), dtype=torch.int64), requires_grad=False)
+            self.curriculum_labels = nn.Parameter(torch.randint(
+                10, size=(num_inner_iterations, generator_batch_size), dtype=torch.int64), requires_grad=False)
         self.curriculum_labels_one_hot = torch.zeros(num_inner_iterations, generator_batch_size, 10)
         self.curriculum_labels_one_hot.scatter_(2, self.curriculum_labels.unsqueeze(-1), 1)
         self.curriculum_labels_one_hot = nn.Parameter(self.curriculum_labels_one_hot, requires_grad=meta_learn_labels)
         # TODO: Maybe learn the soft-labels?
-        self.curriculum = nn.Parameter(torch.randn((num_inner_iterations, generator_batch_size, noise_size), dtype=torch.float32))
+        self.curriculum = nn.Parameter(torch.randn(
+            (num_inner_iterations, generator_batch_size, noise_size), dtype=torch.float32))
         self.generator = torch.jit.trace(self.generator, (torch.rand(generator_batch_size, noise_size + 10),))
 
     def forward(self, it):
@@ -727,7 +739,8 @@ class GTN(nn.Module):
         curriculum_labels_one_hot.scatter_(1, curriculum_labels.unsqueeze(-1), 1)
         curriculum_labels_one_hot = curriculum_labels_one_hot.to("cuda")
 
-        noise = torch.cat([torch.randn(self.generator_batch_size, self.noise_size, device="cuda"), curriculum_labels_one_hot], dim=-1)
+        noise = torch.cat([torch.randn(self.generator_batch_size, self.noise_size,
+                          device="cuda"), curriculum_labels_one_hot], dim=-1)
         x = self.generator(noise)
         return x, curriculum_labels_one_hot
 
@@ -735,11 +748,13 @@ class GTN(nn.Module):
 class DatasetDistillation(nn.Module):
     def __init__(self, num_inner_iterations, generator_batch_size, img_shape):
         super().__init__()
-        self.curriculum_labels = nn.Parameter(torch.randint(10, size=(num_inner_iterations, generator_batch_size), dtype=torch.int64), requires_grad=False)
+        self.curriculum_labels = nn.Parameter(torch.randint(
+            10, size=(num_inner_iterations, generator_batch_size), dtype=torch.int64), requires_grad=False)
         self.curriculum_labels_one_hot = torch.zeros(num_inner_iterations, generator_batch_size, 10)
         self.curriculum_labels_one_hot.scatter_(2, self.curriculum_labels.unsqueeze(-1), 1)
         self.curriculum_labels_one_hot = nn.Parameter(self.curriculum_labels_one_hot, requires_grad=False)
-        self.curriculum = nn.Parameter(torch.randn((num_inner_iterations, generator_batch_size,) + img_shape, dtype=torch.float32))
+        self.curriculum = nn.Parameter(torch.randn(
+            (num_inner_iterations, generator_batch_size,) + img_shape, dtype=torch.float32))
 
     def forward(self, it):
         x = self.curriculum[it]
@@ -750,15 +765,19 @@ class GaussianCGTN(nn.Module):
     def __init__(self, generator, num_inner_iterations, generator_batch_size, noise_size):
         super().__init__()
         self.generator = generator
-        self.curriculum_labels = nn.Parameter(torch.randint(10, size=(num_inner_iterations, generator_batch_size), dtype=torch.int64), requires_grad=False)
+        self.curriculum_labels = nn.Parameter(torch.randint(
+            10, size=(num_inner_iterations, generator_batch_size), dtype=torch.int64), requires_grad=False)
         self.curriculum_labels_one_hot = torch.zeros(num_inner_iterations, generator_batch_size, 10)
         self.curriculum_labels_one_hot.scatter_(2, self.curriculum_labels.unsqueeze(-1), 1)
         self.curriculum_labels_one_hot = nn.Parameter(self.curriculum_labels_one_hot, requires_grad=False)
-        self.curriculum_mu = nn.Parameter(torch.zeros((num_inner_iterations, generator_batch_size, noise_size), dtype=torch.float32))
-        self.curriculum_log_sigma = nn.Parameter(torch.ones((num_inner_iterations, generator_batch_size, noise_size), dtype=torch.float32))
+        self.curriculum_mu = nn.Parameter(torch.zeros(
+            (num_inner_iterations, generator_batch_size, noise_size), dtype=torch.float32))
+        self.curriculum_log_sigma = nn.Parameter(torch.ones(
+            (num_inner_iterations, generator_batch_size, noise_size), dtype=torch.float32))
 
     def forward(self, it):
-        noise = self.curriculum_mu[it] + torch.exp(self.curriculum_log_sigma[it]) * torch.randn_like(self.curriculum_log_sigma[it])
+        noise = self.curriculum_mu[it] + torch.exp(self.curriculum_log_sigma[it]) * \
+            torch.randn_like(self.curriculum_log_sigma[it])
         noise = torch.cat([noise, self.curriculum_labels_one_hot[it]], dim=-1)
         x = self.generator(noise)
         return torch.tanh(x) * 2, self.curriculum_labels_one_hot[it]
@@ -834,12 +853,14 @@ class AutoML(nn.Module):
                                            seed=iteration if deterministic else None, batch_norm_momentum=0)
             tlogger.record_tabular("encoding", encoding)
         elif learner_type == "sampled4":
-            model, encoding = sample_model(input_shape, layers=4, encoding=encoding, seed=iteration if deterministic else None, batch_norm_momentum=0)
+            model, encoding = sample_model(input_shape, layers=4, encoding=encoding,
+                                           seed=iteration if deterministic else None, batch_norm_momentum=0)
             tlogger.record_tabular("encoding", encoding)
         elif learner_type == "base":
             model = Classifier(input_shape, batch_norm_momentum=0.0, randomize_width=randomize_width)
         elif learner_type == "base_fc":
-            model = Classifier(input_shape, batch_norm_momentum=0.0, randomize_width=randomize_width, use_global_pooling=False)
+            model = Classifier(input_shape, batch_norm_momentum=0.0,
+                               randomize_width=randomize_width, use_global_pooling=False)
         elif learner_type == "linear":
             model = models.LinearClassifier(input_shape)
         elif learner_type == "base_larger":
@@ -849,11 +870,14 @@ class AutoML(nn.Module):
         elif learner_type == "base_larger3":
             model = models.ClassifierLarger3(input_shape, batch_norm_momentum=0.0, randomize_width=randomize_width)
         elif learner_type == "base_larger3_global_pooling":
-            model = models.ClassifierLarger3(input_shape, batch_norm_momentum=0.0, randomize_width=randomize_width, use_global_pooling=True)
+            model = models.ClassifierLarger3(input_shape, batch_norm_momentum=0.0,
+                                             randomize_width=randomize_width, use_global_pooling=True)
         elif learner_type == "base_larger4_global_pooling":
-            model = models.ClassifierLarger4(input_shape, batch_norm_momentum=0.0, randomize_width=randomize_width, use_global_pooling=True)
+            model = models.ClassifierLarger4(input_shape, batch_norm_momentum=0.0,
+                                             randomize_width=randomize_width, use_global_pooling=True)
         elif learner_type == "base_larger4":
-            model = models.ClassifierLarger4(input_shape, batch_norm_momentum=0.0, randomize_width=randomize_width, use_global_pooling=False)
+            model = models.ClassifierLarger4(input_shape, batch_norm_momentum=0.0,
+                                             randomize_width=randomize_width, use_global_pooling=False)
         else:
             raise NotImplementedError()
 
@@ -869,12 +893,14 @@ class EndlessDataLoader(object):
             for batch in self._data_loader:
                 yield batch
 
+
 def cli(**kwargs):
     from tabular_logger import set_tlogger
     with open("experiments/cgtn.json") as file:
         kwargs = dict(json.load(file), **kwargs)
     set_tlogger(kwargs.pop("name", "default"))
     return main(**kwargs)
+
 
 if __name__ == "__main__":
     import fire

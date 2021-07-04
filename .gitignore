@@ -1,1 +1,12 @@
 __pycache__
+
+.vscode
+build
+custom_backward_cpp*
+env
+data
+runs*
+tmp
+models
+
+_*
