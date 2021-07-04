@@ -7,8 +7,8 @@ This research was done by Kurt Willis.
 The results were presented in a research seminar about Discrete Optimization and Machine Learning
 lead by prof. Sebastian Pokutta at the Technical University of Berlin in July 2021.
 
-The final report can be found in `seminar/report.pdf` and 
-the presentation can be found in `seminar/presentation.pdf`.
+The final report can be found in [report.pdf](seminar/report.pdf) and 
+the presentation can be found in [presentation.pdf](seminar/presentation.pdf).
 The rest of this readme contains a simplified markdown conversion of the report.
 
 Some general notes: 
@@ -45,7 +45,7 @@ from some latent distribution. One outer-loop cycle (meta training step)
 consists of a full network training cycle (64[^1] inner-loop update
 steps).
 
-![GTN Algorithm](https://github.com/willisk/GTN_Robustness_Tests/blob/master/seminar/markdown/algorithm.png?raw=true)
+![GTN Algorithm](seminar/markdown/algorithm.png)
 
 
 Robustness Performance Tests
