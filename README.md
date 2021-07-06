@@ -1,15 +1,21 @@
 # Generative Teaching Networks Robustness Performance Tests
 
-This repository is a fork of [Generative Teaching Networks](https://arxiv.org/abs/1912.07768) by Uber Labs.
+This is a fork of the [Github repository](https://github.com/uber-research/GTN) by Uber Research on [Generative Teaching Networks](https://arxiv.org/abs/1912.07768).
 All credit for the implementation of GTNs goes to them.
 This repository contains additional code for running some robustness performance tests.
+The driving research question was: **"Does training with GTNs result in less robust models?"**.
 This research was done by Kurt Willis. 
 The results were presented in a research seminar about Discrete Optimization and Machine Learning
 lead by prof. Sebastian Pokutta at the Technical University of Berlin in July 2021.
-
 The final report can be found in [report.pdf](seminar/report.pdf) and 
 the presentation can be found in [presentation.pdf](seminar/presentation.pdf).
-The rest of this readme contains a simplified markdown conversion of the report.
+
+The Generative Teaching Networks were obtained by specifying the training args in [cgtn.json](experiments/cgtn.json)
+and running [train_cgtn.py](train_cgtn.py).
+[retrain.py](retrain.py) trained a total of 5 randomly initialized models for all 9 architectures and saved models after 10 and the full 64 inner update steps respectively.
+[view.py](view.py) ensured that the vanilla models are trained and saved the accuracy results for all 3 training modes (`10_gtn`, `gtn`, `vanilla`),
+9 different architectures and 5 initializations each.
+[attacks.py](attacks.py) executed the various robustness tests and attacks.
 
 Some general notes: 
 Training custom architectures with a
@@ -22,6 +28,8 @@ are restricted to a small set of selected architectures. The authors
 seem to train the GTN on one fixed architecture only. The rate of
 success of transferring a trained GTN to another architecture is
 limited.
+
+The rest of this readme contains a simplified markdown conversion of the report.
 
 Generative Teaching Networks
 ============
